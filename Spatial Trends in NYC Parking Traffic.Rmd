@@ -1,0 +1,494 @@
+---
+title: "Spatial Trends in Parking Traffic in North America"
+author: "Sahil Singh, Dohyun Lee"
+output: "html_document"
+---
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+library(ggplot2)
+library(ggmap)
+library(leaflet)
+library(spdep)
+library(classInt)
+library(dbscan)
+library(stringr)
+library(sp)
+library(spatstat)
+library(splancs)
+library(gstat)
+library(viridis)
+```
+
+### Introduction
+
+The purpose of this study is to investigate spatial patterns and trends of areas 
+within a city where drivers experience difficulty finding parking in North 
+America at the continental, country, and city levels. Our dataset (https://www.kaggle.com/datasets/terenceshin/searching-for-parking-statistics-in-north-america)
+contains aggregated parking statistics dating from April 2020 to October 2020 with 
+information on the specific parking location represented as point data with 
+latitudinal and longitudinal coordinates and variables such as average time 
+taken to search for parking, total number of drivers searching for parking, and 
+percentages of different types of vehicles with parking issues. Additionally, 
+only cities with a population of more than 100,000 people are included.
+
+In our study, we utilize R and a Google Maps API to create data visualizations, 
+such as barplots, boxplots, and histograms, and implement Spatial Autocorrelation, 
+Clustering, and Kriging to geospatially visualize and elicit insight on parking 
+difficulty in North America during the initial onset of COVID-19. Given that we 
+are interested in the time it takes a driver to find parking in a given area, 
+the Null Hypothesis driving our study is that high parking times are randomly 
+distributed, which is tested using Global Moran’s I and Geary's C.
+
+### Key Questions
+
+- What will mapping parking times at the continental, country, and city levels
+reveal? Is it harder to find parking in one country versus another or one
+state versus another?
+
+- What cities are the most prevalent in the dataset? How is the data for these
+points distributed and what are their means?
+
+- Are high or low parking times random chance occurrences and can spatial 
+predictions be made given our data?
+
+### Methods and Results
+
+```{r Figure 1, warning = FALSE}
+# Load data
+d <- read.csv("Searching_for_parking_NA.csv")
+
+# Change variable names to lower case
+colnames(d) <- tolower(colnames(d))
+
+# Change name for USA
+d$country[d$country == 'United States of America (the)'] <- 'USA'
+
+# Get how many points are in each country
+d2 <- as.data.frame(table(d$country))
+names(d2) <- c("country", "n")
+
+# Barplot of sample size by country
+ggplot(data = d2, aes(x = country, y = n, fill = n)) +
+  geom_col(position = "identity") +
+  scale_fill_viridis() +
+  labs(title = "Number of Observations per Country",
+    x = "Country",
+    y = "Observations") +
+  guides(fill = F)
+```
+
+After plotting a barplot of the number of occurrences by country, we can see
+that Mexico does not have many recordings (only 101), so it might not be 
+interesting to compare those observations with locations in the US and Canada
+that have 3647 and 1002 observations, respectively. Below shows an interactive
+leaflet plot that maps the locations in the dataset. If you hover your cursor
+over any of the points it will display a pop-up block showing the county, city,
+state, country, coordinates, the total number of people searching, and the 
+average time to park.
+
+```{r Figure 2, warning = FALSE}
+# Interactive leaflet map
+leaflet(d) %>%
+addTiles() %>% # Add default OpenStreetMap map tiles
+addCircleMarkers(~longitude, 
+                 ~latitude,
+                 radius = ~avgtimetopark,
+                 label = ~paste("</strong>Location:", county, " County",
+                                      ",", city, ",", state, ",", country,
+                                "</strong><br>Coordinates:", "(", latitude, ",", longitude, ")",
+                                "</strong><br>Total People Searching:", totalsearching, 
+                                "</strong><br>Average Time to Park:", 
+                                avgtimetopark, "minutes") %>%
+                 lapply(htmltools::HTML)) 
+
+```
+
+
+```{r Figure 3, warning = FALSE}
+# Top 10 occurring cities in dataset
+top10 <- sort(table(d$city), decreasing = T)
+top10 <- head(top10, 10)
+top10 <- as.data.frame(top10)
+names(top10) <- c("city", "n")
+ggplot(data = top10, aes(x = city, y = n, fill = n)) +
+  geom_col() +
+  scale_fill_viridis() +
+  labs(title = "Top 10 Occurring Cities in the Dataset",
+    x = "City",
+    y = "Frequency",
+    caption = "Figure 2") +
+  theme(axis.text.x = element_text(angle = 90))
+
+# Boxplots of times of top 10 cities
+d10 <- d[d$city == "New York" | d$city == "San Francisco" |
+           d$city == "Vancouver" | d$city == "Toronto" |
+           d$city == "Los Angeles" | d$city == "Houston" |
+           d$city == "San Jose" | d$city == "Hamilton" |
+           d$city == "Washington" | d$city == "Boston", ]
+
+ggplot(data = d10, aes(x = city, y = avgtimetopark, fill = as.factor(city))) +
+  geom_boxplot(alpha = .6, 
+               outlier.shape = NA) + 
+  geom_jitter(size = 0.2, 
+              alpha = 0.35, 
+              width = 0.3, 
+              aes(color = as.factor(city))) +
+  scale_fill_viridis_d(end = .75, option = "D", guide=FALSE) +
+  scale_color_viridis_d(end = .75, option = "D", guide=FALSE) +
+  labs(title = "Parking Time Distribution of the Top 10 Cities",
+    x = "City",
+    y = "Avg. Time Taken to Find Parking (Minutes)") +
+  theme(axis.text.x = element_text(angle = 90))
+
+# Boxplots of people searching in the top 10 cities
+ggplot(data = d10, aes(x = city, y = totalsearching, fill = as.factor(city))) +
+  geom_boxplot(alpha = .6, 
+               outlier.shape = NA) + 
+  geom_jitter(size = 0.2, 
+              alpha = 0.35, 
+              width = 0.3, 
+              aes(color = as.factor(city))) +
+  scale_fill_viridis_d(end = .75, option = "D", guide=FALSE) +
+  scale_color_viridis_d(end = .75, option = "D", guide=FALSE) +
+  labs(title = "Distribution of People Searching in the Top 10 Cities",
+    x = "City",
+    y = "People Searching for Parking ") +
+  theme(axis.text.x = element_text(angle = 90))
+
+# Histograms of times of top 10 cities
+ggplot(data = d10, aes(x = avgtimetopark, fill = as.factor(city))) +
+  geom_histogram() +
+  facet_wrap(~city) +
+  guides(fill = F) +
+  xlab("Avg. Time Taken to Find Parking (Minutes)") +
+  ylab("Frequency") +
+  stat_bin(bins = 20)
+```
+
+To narrow down our points of interest, we decided to look at the top 10
+occurring cities in the dataset since it might give us some interesting 
+insights. To visualize this we created a barplot, which shows us that New York
+City had the most data (356 points) and among the top 10 there are three
+Canadian cities: Vancouver, Toronto, and Hamilton. We made boxplots for each
+city plotted with their points against the average time taken to find parking.
+The mean time for New York, Boston, and Washington appears to be about 7 to 
+7.5 minutes and cities like Hamilton, San Jose, and Vancouver have mean times 
+of about 3 to 4 minutes. This could potentially be because these cities are 
+easier to navigate in or have more accessible parking. Looking at the boxplot 
+for the amount of people searching for parking the numbers are mostly low, but
+you can see that there are some outliers in which a few locations in some cities 
+had more than 100 drivers looking for parking during the first 2020 lockdown.
+A reason for these outliers could be that perhaps these locations could be near 
+hospitals or commercial districts with establishments that sell essential items
+like food or toilet paper. On that note, this data was accumulated during the 
+initial onset of COVID-19 when people all around the world were stuck inside 
+their houses, so the relative low times make sense and most likely would not be 
+reflective of traffic today. Our grid of histograms also reveal that the parking 
+times for New York are approximately Normally distributed along with Los Angeles 
+and Boston, while the others are more skewed.
+
+Since New York had the most data, we will be using New York as our city-level
+example. Like what we did earlier, we map the points on an interactive leaflet
+plot. This time we add visual distinction with the colors -- darker blue 
+indicates a higher time and a lighter blue indicates a lower time.
+
+```{r Figure 4, warning = FALSE}
+# Focus on New York City since it has the most points
+d_nyc <- d[d$city == "New York", ]
+
+pal <- colorNumeric(palette = c("slategray1", "dodgerblue2", "navyblue"), domain = NULL)
+
+leaflet(d_nyc) %>%
+addTiles() %>% # Add default OpenStreetMap map tiles
+addCircleMarkers(~longitude, 
+                 ~latitude,
+                 radius = ~avgtimetopark,
+                 color = ~pal(avgtimetopark),
+                 label = ~paste("</strong>Location:", county, " County",
+                                      ",", city, ",", state, ",", country,
+                                "</strong><br>Coordinates:", "(", latitude, ",", longitude, ")",
+                                "</strong><br>Total People Searching:", totalsearching,
+                                "</strong><br>Average Time to Park:", 
+                                avgtimetopark, "minutes") %>%
+                 lapply(htmltools::HTML))
+```
+
+
+
+```{r Figure 5, warning = FALSE}
+### Kernel Density Mapping of Traffic in NYC ###
+register_google(key = "AIzaSyCArCyZ-UmuPVseDvS-ybgESmP7IamSptk")
+
+nyc_map <- get_googlemap("New York City", zoom = 13, source = 'google')
+ggmap(nyc_map, extent = "device") +    
+  stat_density2d(data = d_nyc,
+                 aes(x = longitude, 
+                     y = latitude, 
+                     fill = after_stat(level),
+                     alpha = after_stat(level)),
+                 geom = 'polygon') +
+  guides(fill = F, alpha = F)
+```
+
+Here we use a kernel density mapping based on the average time taken to find 
+parking in New York City. From a city-level view, we see signs of spatial 
+clustering, especially in Manhattan which we would expect. Though this is a good 
+way to identify and visualize spatial clustering trends in our data, it is a 
+little difficult to pinpoint what certain areas observe the most difficulty for 
+drivers to find parking due the massive amount of area the kernel density covers 
+on the map. Despite this the algorithm still follows the insight we expect -- a 
+higher concentration in and around Manhattan.
+
+To dive deeper into eliciting spatial autocorrelation, we want to analyze the 
+Global and Local Moran's I values as well as the Geary's C statistic. To do 
+this, we first need to restructure our dataset in a format suitable to the 
+several spatial statistics packages that are essential to our analyses. Below is 
+the code used to create a SpatialPolygonsDataFrame object from our dataset.
+
+```{r, warning = FALSE}
+### Create a SpatialPolygonsDataFrame object from our given Geospatial data ###
+
+# Initialize empty list
+polygon_list <- list()
+
+# Set number of digits so when we convert from char to numeric later
+# the values don't round
+options(digits = 15)
+
+# Get rid of POLYGON((...)) tag 
+d_nyc$geohashbounds <- gsub("[POLYGON((]|[))]", "", d_nyc$geohashbounds)
+
+# Create a list of the boundary lat/long values for a given location
+for(i in 1:nrow(d_nyc)) {
+  # Extract polygon bound coordinates for each location
+  polygon_bounds <- data.frame(x = do.call("cbind", 
+                   strsplit(d_nyc$geohashbounds[i], ", ", fixed = TRUE)))
+  
+  # Split the dataframe so that each row represents a set of coordinates
+  polygon_bounds <- as.data.frame(str_split_fixed(polygon_bounds$x, " ", 2))
+  
+  # Convert to dataframe
+  polygon_bounds <- as.data.frame(polygon_bounds)
+  
+  # Convert from char to numeric
+  polygon_bounds[,1] <- as.numeric(polygon_bounds[,1])
+  polygon_bounds[,2] <- as.numeric(polygon_bounds[,2])
+  
+  # Append data frames to a list of all the polygons
+  polygon_list[[i]] <- polygon_bounds
+}
+
+# Create empty list to hold the list of polygons for each location
+polygons <- list()
+
+# Convert the coordinates from 5x2 dataframe to SP
+for(i in 1:nrow(d_nyc)) {
+  p <- Polygon(polygon_list[[i]])
+  ps <- Polygons(list(p), i)
+  polygons[[i]] <- ps
+}
+
+# Bundle everything into SpatialPolygon objects
+sp <- SpatialPolygons(polygons)
+
+# Create SPDF to use for mapping
+park <- SpatialPolygonsDataFrame(data = d_nyc, 
+                                 Sr = sp,
+                                 match.ID = F)
+
+# Add projection string of class CRS
+proj4string(park) <- CRS("+proj=longlat +datum=NAD83 +no_defs +ellps=GRS80 +towgs84=0,0,0")
+```
+
+```{r Figure 6, warning = FALSE}
+# Create adjacency (data is filtered for New York City)
+coords <- coordinates(park)
+ids <- row.names(as(park, "data.frame")) 
+delaunayNB <- tri2nb(coords, row.names = ids)
+soiNB <- graph2nb(soi.graph(delaunayNB, coords), row.names = ids)
+plot(soiNB, coords, pch=20, cex=0.5, col="gray") ; title("Sphere of Influence")
+
+# Create row standardized spatial weights from neighbor list
+# Use a Sphere of Influence weighting
+soiNBW <- nb2listw(soiNB, glist=NULL, style="W", zero.policy=TRUE)
+
+# Compute distances between each point (meters)
+nbDistances <- nbdists(soiNB, coords)
+
+# Compute inverse distances between sets of points
+inverse <- lapply(nbDistances, function(x) (1 / (x^2))) 
+
+# Create a listw object
+soiNBInvW <- nb2listw(soiNB, glist=inverse, style="W", zero.policy=TRUE)
+
+```
+
+```{r}
+# Global's Moran's I
+moran.test(park$avgtimetopark, listw = soiNBW, zero.policy = T)
+
+# Global Geary's C
+geary.test(park$avgtimetopark, listw = soiNBW, zero.policy = T)
+```
+
+A Global Moran's I value greater than 0 indicates positive spatial autocorrelation 
+and that neighboring regions tend to have similar values and can be clustered 
+whereas a negative Moran's I value indicates negative spatial autocorrelation 
+and that neighboring regions tend to have different values. In the output above, 
+we see that our Moran's I value of 0.143 is greater than 0 which indicates positive 
+spatial autocorrelation and that neighboring regions tend to have similar values 
+and can be clustered. We can also see that the positive autocorrelation is 
+statistically significant as the p-value is 0.0011 < 0.05. 
+
+A Global Geary's C value of 0 indicates perfect positive spatial autocorrelation
+and a C value of 2 indicates perfect negative spatial autocorrelation. From the 
+Geary's C test we observe that the Geary's C value is 0.86 and the p-value is
+0.0025 < 0.05, indicating statistically significant positive spatial autocorrelation.
+
+So, we reject the null hypothesis and conclude that parking times in New York 
+are not randomly distributed and that they are not a random chance spatial 
+process. In other words, locations that observe longer times for parking are 
+more likely to be clustered together.
+
+```{r}
+localM <- localmoran(park$avgtimetopark, listw = soiNBW, zero.policy = T)
+
+## Extract Z-scores 
+park$localMoranZ <- abs(localM[,4]) 
+
+# Extract the data part of the park SPDF
+p <- park@data
+
+# Define a color palette
+pal1 <- colorNumeric(palette = c("lightyellow", "darkorange", "red"), domain = NULL)
+
+# Local Moran's I for NYC
+leaflet(p) %>%
+addTiles() %>% # Add default OpenStreetMap map tiles
+addCircleMarkers(~longitude, 
+                 ~latitude,
+                 radius = ~avgtimetopark,
+                 color = ~pal1(localMoranZ),
+                 label = ~paste("</strong>Location:", county, " County",
+                                      ",", city, ",", state, ",", country,
+                                "</strong><br>Coordinates:", "(", latitude, ",", longitude, ")",
+                                "</strong><br>Average Time to Park:", avgtimetopark, "minutes",
+                                "</strong><br>Local Moran's I (|Z| Scores):", localMoranZ) %>%
+                 lapply(htmltools::HTML))
+
+```
+
+Local Moran's I is computed locally by evaluating the spatial autocorrelation
+between a location and its neighbors and looking at the spatial autocorrelation
+among the average times it took to find parking in a certain location. From the
+leaflet plot above we can see that locations with higher Local Moran's I values 
+have longer parking times thus are clustered together. Similarly, locations with
+lower Local Moran's I values have lower parking times and surround each other 
+more.
+
+```{r Figure 7, warning = FALSE}
+# Moran Scatterplot
+# Define a color palette
+myPal <- colorRampPalette(c("firebrick1", "gray31"), space = "rgb")
+
+# How many colors/intervals do you want?
+nInts <- 50 
+myPal <- myPal(n = nInts) # Store your color palette
+classesQuantile <- suppressWarnings(classIntervals(localM[which(abs(localM[, 5]) <= 0.1), 5], 
+                                                   n = nInts, 
+                                                   style = "quantile"))
+# Initialize a vector
+myCols <- NA
+
+# Obtain colors for significant values
+# Assign non-significant values a gray color
+myCols[which(abs(localM[, 5]) <= 0.1)] <- findColours(classesQuantile, myPal) 
+myCols[which(abs(localM[,5]) > 0.1)] <- "gray31"
+moran.plot(park$avgtimetopark,
+           listw = soiNBW,
+           zero.policy = TRUE,
+           xlab="Average Time Taken to Park",
+           ylab="Average Time Taken to Park (Spatial Lag)",
+           main = "Moran Scatterplot",
+           col = myCols,
+           pch = 20)
+```
+
+In the Moran scatterplot, the points in the upper right and lower left quadrants
+are those in which there is a positive association between the location and the
+spatially lagged counterparts. Given this information and the positions of the
+points we can see that there is positive spatial autocorrelation which does
+agree with the global metrics. However, it is important to note that the Moran 
+scatterplot shows that a positive value of the Global I does not necessarily 
+correspond with values exclusively in the upper right and lower left quadrants.
+
+```{r Figure 8, warning = FALSE}
+# Kriging for Spatial Prediction
+# Get and fit the variogram model
+coordinates(d_nyc) <- c("longitude", "latitude")
+proj4string(d_nyc) <- CRS("+proj=longlat +datum=WGS84 +no_defs")
+d_nyc <- d_nyc[-zerodist(d_nyc)[,1],] # Removes duplicates
+vgm <- variogram(avgtimetopark ~ 1, d_nyc)
+fit <- fit.variogram(vgm, model = vgm("Exp"))
+
+# Create an empty grid
+grid <- makegrid(d_nyc)
+names(grid) <- c("longitude", "latitude")
+coordinates(grid) <- c("longitude", "latitude")
+proj4string(grid) <- CRS("+proj=longlat +datum=WGS84")
+
+# Kriging function
+nyc_kriged <- krige(avgtimetopark ~ latitude + longitude,
+                   d_nyc,
+                   grid,
+                   model = fit)
+
+# Get a new filtered dataset for NYC parking since d_nyc is a spatial 
+# point data frame now
+new_dnyc <- d[d$city == "New York", ]
+
+# Overlay the grid of predicted parking times over a map of NYC
+ggmap(nyc_map) +
+  geom_tile(data = as.data.frame(nyc_kriged), aes(x = longitude, 
+                                                  y = latitude, 
+                                                  fill = var1.pred, 
+                                                  alpha = var1.pred)) +
+  geom_point(data = new_dnyc, aes(x = longitude, y = latitude)) +
+  scale_fill_gradient(low = "black", high = "red") +
+  ggtitle("Universal Kriging") +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  guides(fill = guide_colorbar("Time (Minutes)"), alpha = F) +
+  theme_bw()
+```
+
+Lastly, we use kriging to predict the parking times of the surrounding areas 
+given what we know about the observed points. The algorithm uses universal 
+kriging as opposed to ordinary kriging because the input data is already marked 
+by an overriding trend of higher times in points where there is more clustering
+whereas ordinary kriging assumes that there is no trend in the data. As we would
+expect, we can see that, based off the color scale, the areas surrounding the 
+main clusters of points are predicted to have higher parking times and areas 
+farther away are predicted to have lower times thus less difficulty parking. 
+From our map, the predicted time to find parking in the clustered Manhattan 
+points appears to be around 7 to 7.5 minutes, which is consistent with the mean 
+time we observed from our plots earlier.
+
+### Conclusion
+
+By narrowing down our case study to focus on New York City traffic, we discovered
+that the amount of time it takes to find parking is not randomly distributed 
+and that there is positive spatial autocorrelation using a kernel density
+mapping and Local Moran's I. We also found that spatial clustering does occur
+in areas with higher observed parking times. As a result, we were able to use
+universal kriging to make predictions of parking times in the surrounding areas,
+which ended up being consistent with what we derived in the initial data
+exploration process. Going forward, we would like to gather parking data from 
+the present day and even before the pandemic and conduct the same analyses to 
+see how traffic and search times compare -- we believe that this can offer 
+meaningful information on a spatiotemporal level, help predict future
+traffic outcomes, and contribute to urban planning to accommodate the needs of
+the inhabiting communities.
+
+
+
